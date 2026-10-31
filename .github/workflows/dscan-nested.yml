@@ -1,0 +1,60 @@
+name: dscan-nested
+on: push
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: ffmpeg
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; else choco install ffmpeg -y --no-progress >/dev/null 2>&1 || true; fi
+      - name: project
+        shell: bash
+        run: |
+          mkdir p && cd p
+          python3 - <<'PY'
+          def scene(i, start, dur, color):
+              return (f'<div id="s{i}" data-composition-id="scene{i}" data-start="{start}" data-duration="{dur}" data-track-index="{i}" '
+                      f'style="position:absolute;inset:0"><div class="box{i}" style="position:absolute;top:{200+i*200}px;left:0;width:200px;height:150px;background:{color}"></div>'
+                      f'<script>window.__timelines=window.__timelines||{{}};window.__timelines["scene{i}"]=gsap.timeline({{paused:true}});'
+                      f'window.__timelines["scene{i}"].to(".box{i}",{{x:1500,duration:{dur},ease:"none"}},0);</script></div>')
+          html=('<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script></head><body style="margin:0;background:#fff">'
+                '<div id="root" data-composition-id="main" data-start="0" data-duration="23.9" data-width="1920" data-height="1080" data-fps="30" style="position:relative;width:1920px;height:1080px">'
+                + scene(0,0,8,"#d00") + scene(1,8,8,"#0a0") + scene(2,16,7.9,"#00d") +
+                '</div><script>window.__timelines=window.__timelines||{};window.__timelines["main"]=gsap.timeline({paused:true});</script></body></html>')
+          open("index.html","w").write(html)
+          PY
+          echo '{}' > hyperframes.json
+      - name: snapshots
+        shell: bash
+        run: |
+          cd p
+          pip install pillow >/dev/null 2>&1 || python3 -m pip install pillow >/dev/null 2>&1
+          for t in 23.8333 23.85 23.8667 23.88 23.9 20.01 20.0; do
+            rm -rf snapshots
+            npx -y hyperframes@0.8.223 snapshot --at $t --no-end --describe false > out-$t.log 2>&1
+            f=$(ls snapshots/*.png 2>/dev/null | head -1)
+            python3 - "$t" "$f" <<'PY'
+          import sys
+          from PIL import Image
+          t,f=sys.argv[1],sys.argv[2]
+          if not f: print(t,"NO PNG"); raise SystemExit
+          im=Image.open(f).convert("RGB"); w,h=im.size
+          # blue box (scene2) row y~ 200+2*200 = 600..750 scaled; find leftmost blue pixel column
+          sx=w/1920
+          def leftmost(rgb,y0,y1):
+              for x in range(w):
+                  for y in range(int(y0*sx),int(y1*sx),10):
+                      p=im.getpixel((x,y))
+                      if abs(p[0]-rgb[0])<40 and abs(p[1]-rgb[1])<40 and abs(p[2]-rgb[2])<40: return round(x/sx)
+              return None
+          print(t,"blue box left edge x =",leftmost((0,0,221),620,730),"| red",leftmost((221,0,0),220,330),"| green",leftmost((0,170,0),420,530))
+          PY
+          done
